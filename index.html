@@ -828,13 +828,12 @@
       });
 
       // Mark batters who left the crease without losing their wicket as "retired hurt"
+      // (including not-out girls who leave after Over 1 when boys come in to bat)
       const retiredSet = new Set(Array.isArray(inn.retiredHurtIds) ? inn.retiredHurtIds : []);
       Object.values(battingMap).forEach(b => {
         if (!b.out && b.batted) {
           const isAtCrease = (b.playerId === inn.strikerId || b.playerId === inn.nonStrikerId);
-          const p = getPlayer(b.playerId);
-          const isGirlLeftAfterOv1 = p && p.gender === 'girl' && !retiredSet.has(b.playerId) && (inn.overs || []).length > 1;
-          if (retiredSet.has(b.playerId) || (!isAtCrease && !isGirlLeftAfterOv1)) {
+          if (retiredSet.has(b.playerId) || !isAtCrease) {
             b.retiredHurt = true;
             b.dismissalText = 'retired hurt';
           }
