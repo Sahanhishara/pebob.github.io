@@ -3212,9 +3212,10 @@
             ${appSession.rtdbError ? `<div class="text-xs font-bold text-rose-600">⚠️ ${escapeHtml(appSession.rtdbError)}</div>` : ''}
             <div class="flex items-center justify-between gap-2 flex-wrap pt-1">
               <span class="text-xs text-slate-600">${appSession.lastSyncedTimeStr ? `Last synced at ${appSession.lastSyncedTimeStr}` : 'Connected automatically for all scorers & watchers.'}</span>
-              <div class="flex gap-2">
+              <div class="flex gap-2 flex-wrap">
                 <button onclick="manualRefreshLive()" class="tap-btn px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold text-xs">↻ Sync Now</button>
                 <button onclick="copyTvShareLink()" class="tap-btn px-3.5 py-2 rounded-xl bg-sky-600 hover:bg-sky-700 text-white font-bold text-xs">📋 Copy TV Link</button>
+                <button onclick="confirmClearDatabase()" class="tap-btn px-3.5 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs">🗑️ Clear DB & Restart</button>
               </div>
             </div>
           </div>
@@ -3330,7 +3331,7 @@
               <button onclick="copyTvShareLink()" class="tap-btn py-3 rounded-xl bg-sky-600 text-white font-bold text-xs">📋 Copy TV Link</button>
               <button onclick="exportBackupJSON()" class="tap-btn py-3 rounded-xl bg-slate-900 text-white font-bold text-xs">💾 Export JSON</button>
               <button onclick="triggerImportJSON()" class="tap-btn py-3 rounded-xl bg-emerald-600 text-white font-bold text-xs">📂 Import JSON</button>
-              <button onclick="confirmResetTournament()" class="tap-btn py-3 rounded-xl bg-rose-50 text-rose-700 border border-rose-200 font-bold text-xs">🔄 Reset All</button>
+              <button onclick="confirmClearDatabase()" class="tap-btn py-3 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs">🗑️ Clear Database</button>
             </div>
           </div>
         </div>
@@ -3570,19 +3571,78 @@
     }
 
     function confirmResetTournament() {
+      confirmClearDatabase();
+    }
+
+    function confirmClearDatabase() {
       if (!appSession.scorerUnlocked) return;
       showModal({
-        title: 'Reset Entire Tournament?',
-        bodyHtml: 'Erase all 16 matches, scores, and restore default teams & players?',
+        title: '🗑️ Clear Database & Start Again?',
+        bodyHtml: `
+          <div class="space-y-3">
+            <p class="text-xs sm:text-sm text-slate-700">
+              This will permanently wipe all saved scores and matches from <strong>Firebase (${ROOM_CODE})</strong> and this device, then start a fresh tournament for all watchers.
+            </p>
+            <label class="flex items-center gap-2.5 bg-slate-50 border border-slate-200 rounded-xl p-3 cursor-pointer">
+              <input id="clear-db-keep-rosters" type="checkbox" class="w-4 h-4 accent-emerald-600 shrink-0" />
+              <span class="text-xs font-bold text-slate-800">Keep my custom team names, players & rules (clear matches/scores only)</span>
+            </label>
+          </div>
+        `,
         actions: [
-          { label: 'Cancel', className: 'px-4 py-2 rounded-xl text-xs font-bold bg-slate-100' },
+          { label: 'Cancel', className: 'px-4 py-2 rounded-xl text-xs font-bold bg-slate-100 text-slate-700' },
           {
-            label: 'Reset All',
-            className: 'px-4 py-2 rounded-xl text-xs font-bold bg-rose-600 text-white',
-            onClick: () => { state = createDefaultState(); saveState(); render(); showToast('Tournament reset!', '🔄'); }
+            label: '🗑️ Yes, Clear Database',
+            className: 'px-4 py-2 rounded-xl text-xs font-bold bg-rose-600 hover:bg-rose-700 text-white',
+            onClick: () => {
+              const keepEl = document.getElementById('clear-db-keep-rosters');
+              const keepRosters = Boolean(keepEl && keepEl.checked);
+              executeClearDatabase(keepRosters);
+            }
           }
         ]
       });
+    }
+
+    async function executeClearDatabase(keepRosters = false) {
+      if (!appSession.scorerUnlocked) return;
+      showToast('Clearing Firebase database...', '🗑️');
+      clearTimeout(syncTimer);
+
+      const savedTeams = keepRosters ? JSON.parse(JSON.stringify(state.teams)) : null;
+      const savedPlayers = keepRosters ? JSON.parse(JSON.stringify(state.players)) : null;
+      const savedSettings = keepRosters ? JSON.parse(JSON.stringify(state.settings)) : null;
+
+      try {
+        // 1. Delete existing tournament node from Firebase Realtime Database
+        const delRes = await fetch(RTDB_ENDPOINT, { method: 'DELETE' });
+        if (!delRes.ok) throw new Error(`HTTP ${delRes.status}`);
+      } catch (err) {
+        console.error('RTDB delete error:', err);
+        showToast('Could not reach Firebase to delete — resetting locally.', '⚠️');
+      }
+
+      // 2. Clear local storage state & build a fresh tournament
+      try { localStorage.removeItem(STORAGE_STATE_KEY); } catch (e) {}
+      state = createDefaultState();
+      if (keepRosters) {
+        state.teams = savedTeams;
+        state.players = savedPlayers;
+        state.settings = savedSettings;
+      }
+      state.updatedAt = Date.now();
+      appSession.lastRemoteUpdatedAt = 0;
+      appSession.pinnedTvMatchId = null;
+      appSession.scorerTab = 'scorer';
+      uiState.pendingExtra = null;
+      uiState.summaryInningsTab = 0;
+
+      // 3. Save locally & immediately push clean state to Firebase so all watchers reset
+      try { localStorage.setItem(STORAGE_STATE_KEY, JSON.stringify(state)); } catch (e) {}
+      saveSession();
+      render();
+      await pushStateToCloudImmediate();
+      showToast(keepRosters ? 'Database cleared! Rosters kept — ready for Match 1.' : 'Database cleared! Fresh tournament ready.', '✅');
     }
 
     function exportBackupJSON() {
@@ -3630,7 +3690,7 @@
       setActiveBatter, openRetireHurtModal, swapStrike, setCurrentBowler, recordBall, openWicketPanel, confirmWicketBall,
       undoLastBall, setSuperOverWinner, openMatchWeatherModal, openPlayoffOverrideModal,
       applySquadPreset, openQuickAddPlayerModal, updateTeamName, updatePlayerField, deletePlayer,
-      updateSetting, confirmResetMatch, confirmResetTournament, exportBackupJSON, triggerImportJSON,
+      updateSetting, confirmResetMatch, confirmResetTournament, confirmClearDatabase, exportBackupJSON, triggerImportJSON,
       handleImportFile, closeModal, render
     });
 
